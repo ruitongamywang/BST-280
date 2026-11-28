@@ -1,0 +1,79 @@
+---
+title: "00_inspect"
+author: "Chenhan"
+date: "2026-11-27"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## 1. data prep 
+
+```{r}
+
+## 0. library
+library(edgeR)
+library(here)
+
+## 1. access Young's 
+young <- here("..", "00_Young2021_OpenDataCode", "TB PANDA")
+list.files(young)
+list.files(file.path(young, "rdata"))
+
+## load dge into its own environment
+e <- new.env()
+loaded <- load(file.path(young, "rdata", "dge.rdata"), envir = e)
+loaded                      # name(s) of the object(s) in the file
+dge <- e[[loaded[1]]]
+class(dge)                  # DE results table, not counts
+names(dge)                  
+
+
+
+# check log2CPM and look for the raw counts and sample sheet
+
+
+## log2CPM matrix
+e2 <- new.env()
+loaded2 <- load(file.path(young, "rdata", "log2CPM.RData"), envir = e2)
+loaded2
+lcpm <- e2[[loaded2[1]]]
+class(lcpm); dim(lcpm)          # hoping for genes x 69
+lcpm[1:5, 1:5]
+colnames(lcpm)                  # sample names often encode time/treatment/batch
+
+## find raw counts and sample info anywhere in the folder
+list.files(young, recursive = TRUE,
+           pattern = "count|sample|meta|design|target|pheno",
+           ignore.case = TRUE)
+list.files(file.path(young, "data", "panda"))
+
+## see how the authors built log2CPM
+rmd <- readLines(file.path(young, "npjsysbio.Rmd"))
+grep("log2CPM|cpm\\(|DGEList|counts", rmd, value = TRUE)
+
+```
+
+get the sample table 
+
+```{r}
+
+lcpm_rb <- e2[["log2CPM.rm.batch"]]
+
+meta <- data.frame(sample = colnames(lcpm))
+parts <- do.call(rbind, strsplit(meta$sample, "_"))
+meta$treatment  <- factor(parts[, 1], levels = c("DMSO", "T4", "T10"))
+meta$time       <- factor(parts[, 2], levels = c("0hr", "12hr", "24hr", "48hr"))
+meta$experiment <- factor(parts[, 3])
+meta$rep        <- parts[, 4]
+
+table(meta$treatment, meta$time)
+table(meta$experiment, meta$time)
+identical(colnames(lcpm), colnames(lcpm_rb))   # should be TRUE
+
+```
+

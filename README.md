@@ -5,20 +5,10 @@
 ### Data source
 Processed RNA-seq data from Young et al. (2021), *npj Systems Biology and Applications*, Zenodo record [3960874](https://zenodo.org/records/3960874).
 
-The authors' files are **not** in this repo. Download and unzip them next to the repo:
+The authors' files are **not** in this repo. Download and unzip them next to the repo. 
 
-```
-BST280_GP/
-├── 00_Young2021_OpenDataCode/TB PANDA/   # authors' data (not tracked)
-└── BST-280/                              # this repo
-```
 
-Scripts find the data with `here::here("..", "00_Young2021_OpenDataCode", "TB PANDA")`. On Linux, file names are case-sensitive (`dge.rdata`, `log2CPM.RData`).
-
-### Requirements
-R 4.4.2, Bioconductor 3.20, `edgeR`, `limma`, `here`.
-On MIT ORCD RStudio, if compiling fails with a Spack gcc error, run this first:
-`Sys.setenv(PATH = paste("/usr/bin", Sys.getenv("PATH"), sep = ":"))`
+Scripts find the data with `here::here("..", "00_Young2021_OpenDataCode", "TB PANDA")`.
 
 ### Input files used
 | File | Contents | Use |
