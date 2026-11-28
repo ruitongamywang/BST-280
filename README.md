@@ -1,6 +1,6 @@
 # BST-280 group project
 
-## Data preparation (`01_script/00_inspect.Rmd`)
+## Data preparation (`01_script/00_DataPrep.Rmd`)
 
 ### Data source
 Processed RNA-seq data from Young et al. (2021), *npj Systems Biology and Applications*, Zenodo record [3960874](https://zenodo.org/records/3960874).
