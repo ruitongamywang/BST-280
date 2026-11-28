@@ -1,0 +1,333 @@
+---
+title: "01_ExploratoryDataAnalysis"
+author: "Chenhan"
+date: "2026-11-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## 1. PCA
+
+```{r}
+
+## setup: load data and rebuild metadata
+library(here); library(ggplot2); library(pheatmap); library(patchwork)
+
+young <- here("..", "00_Young2021_OpenDataCode", "TB PANDA")
+e <- new.env()
+load(file.path(young, "rdata", "log2CPM.RData"), envir = e)
+lcpm    <- e[["log2CPM"]]
+lcpm_rb <- e[["log2CPM.rm.batch"]]
+
+meta  <- data.frame(sample = colnames(lcpm))
+parts <- do.call(rbind, strsplit(meta$sample, "_"))
+meta$treatment  <- factor(parts[, 1], levels = c("DMSO", "T4", "T10"))
+meta$time       <- factor(parts[, 2], levels = c("0hr", "12hr", "24hr", "48hr"))
+meta$experiment <- factor(parts[, 3])
+stopifnot(identical(colnames(lcpm), colnames(lcpm_rb)))
+
+dir.create(here("figures"), showWarnings = FALSE)
+
+
+```
+
+
+**Note on the batch-corrected matrix (`log2CPM.rm.batch`)**
+
+`log2CPM.RData` from Young et al. (2021; Zenodo 3960874) contains two matrices: `log2CPM` (uncorrected) and `log2CPM.rm.batch` (batch-corrected; the same
+3,974 genes x 69 samples in the same order).
+
+The RNA-seq data come from Carette et al. (2018, *mBio* 9:e02333-17; GEO GSE110508). *M. tuberculosis* H37Rv was treated with either an active
+PknA/PknB kinase inhibitor or an inactive analogue (differing by one N-methyl group, with no kinase or growth inhibition) at 20 µM, and harvested at 12, 24 and 48 h, in 3 independent experiments x 3 replicates. In the sample names, T4 and T10 are these two compounds, and DMSO samples are the 0 h vehicle
+baseline.
+
+**Check 1: Identifying the active compound (T4 vs. T10)**
+
+The papers do not use the labels T4 and T10. The GEO overall design states "active inhibitor (T4) vs. control compound (T10)". We confirmed this in the
+data: our T10 − T4 difference at 48 h correlates at r = −0.999 with the authors' active-vs-control logFC (`dge.rdata`, `logFC.48hr`). **T4 is the
+active inhibitor; T10 is the inactive control.**
+
+The analysis code (`npjsysbio.Rmd`) loads `log2CPM.rm.batch` ready-made and uses it as the expression input for the PANDA networks, one per compound:
+
+    expr4  <- log2CPM.rm.batch[, grep("T4",  colnames(log2CPM.rm.batch))]
+    expr10 <- log2CPM.rm.batch[, grep("T10", colnames(log2CPM.rm.batch))
+
+```{r}
+
+e <- new.env()
+load(file.path(young, "rdata", "dge.rdata"), envir = e)
+dge <- e[[ls(e)[1]]]
+colnames(dge)            # find the 48 hr logFC column and the gene ID column
+
+# our own difference at 48 hr: T10 mean minus T4 mean
+d48 <- rowMeans(lcpm[, grepl("^T10_48hr", colnames(lcpm))]) -
+       rowMeans(lcpm[, grepl("^T4_48hr",  colnames(lcpm))])
+
+# match genes (edit the two column names to match colnames(dge))
+lfc <- setNames(dge$logFC.48hr, dge$RV)
+common <- intersect(names(d48), names(lfc))
+cor(d48[common], lfc[common])        # strongly positive -> T10 active; negative -> T4 active
+plot(lfc[common], d48[common], xlab = "Authors' logFC (active vs control)",
+     ylab = "Our T10 - T4 at 48 hr"); abline(h = 0, v = 0, lty = 2)
+
+```
+
+
+**Check 2: Reproducing the batch correction**
+We tried to rebuild the matrix with limma's `removeBatchEffect()`, removing experiment as batch, in three ways: (A) protecting treatment x time,
+(B) with no design, and (C) correcting each compound separately. We compared each adjustment (corrected − raw) with the authors' adjustment:
+
+| Variant | r with authors' adjustment | max abs. difference |
+|---|---|---|
+| A: experiment, protect treatment x time | 0.943 | 2.74 |
+| B: experiment, no design | 0.940 | 2.75 |
+| C: per compound | 0.881 | 2.87 |
+
+Variant A fits best. Its median absolute difference from the authors' matrix is 0.07 log2 units (75% of values < 0.11), with rare values up to 2.7. The
+authors' correction is therefore the same kind (experiment batch removed from all samples together), but with settings we could not recover exactly.
+**We use the authors' matrix as provided.**
+
+**Our use:**
+We analyze both matrices: `log2CPM` to show the batch effect in the raw data, and `log2CPM.rm.batch` to match the authors' downstream input and to check
+that the correction removes batch structure while keeping time and treatment effects.
+
+```{r}
+
+library(limma)
+group <- factor(paste(meta$treatment, meta$time, sep = "_"))   # biology to protect
+
+# Variant A: remove experiment, protecting treatment x time
+rbA <- removeBatchEffect(lcpm, batch = meta$experiment,
+                         design = model.matrix(~ group))
+# Variant B: remove experiment with no design
+rbB <- removeBatchEffect(lcpm, batch = meta$experiment)
+
+for (x in list(A = rbA, B = rbB)) {
+  print(c(max_abs_diff = max(abs(x - lcpm_rb)),
+          cor = cor(as.vector(x), as.vector(lcpm_rb))))
+}
+
+```
+
+
+```{r}
+
+adj_theirs <- lcpm_rb - lcpm
+adj_A <- rbA - lcpm
+adj_B <- rbB - lcpm
+
+# Variant C: correct each compound separately (DMSO with T4)
+rbC <- lcpm
+for (g in list(meta$treatment != "T10", meta$treatment == "T10")) {
+  rbC[, g] <- removeBatchEffect(lcpm[, g], batch = droplevels(meta$experiment[g]),
+                                design = model.matrix(~ droplevels(group[g])))
+}
+adj_C <- rbC - lcpm
+
+sapply(list(A = adj_A, B = adj_B, C = adj_C), function(a)
+  c(cor_adjustment = cor(as.vector(a), as.vector(adj_theirs)),
+    max_abs_diff   = max(abs(a - adj_theirs))))
+summary(as.vector(abs(rbA - lcpm_rb)))    # is 2.7 a rare outlier or typical?
+
+```
+
+
+
+**run PCA**
+
+```{r}
+
+## PCA: raw vs batch-corrected
+run_pca <- function(mat) {
+  p <- prcomp(t(mat), center = TRUE, scale. = FALSE)  # samples as rows
+  list(scores = cbind(meta, p$x[, 1:5]),
+       varexp = round(100 * p$sdev^2 / sum(p$sdev^2), 1))
+}
+pca_raw <- run_pca(lcpm)
+pca_rb  <- run_pca(lcpm_rb)
+
+plot_pca <- function(pca, color, title) {
+  ggplot(pca$scores, aes(PC1, PC2, color = .data[[color]], shape = treatment)) +
+    geom_point(size = 2.5, alpha = 0.85) +
+    labs(title = title,
+         x = paste0("PC1 (", pca$varexp[1], "%)"),
+         y = paste0("PC2 (", pca$varexp[2], "%)")) +
+    theme_bw()
+}
+
+# color by time
+p_time <- plot_pca(pca_raw, "time", "Raw: by time") +
+          plot_pca(pca_rb,  "time", "Batch-corrected: by time")
+# color by experiment (batch)
+p_batch <- plot_pca(pca_raw, "experiment", "Raw: by experiment") +
+           plot_pca(pca_rb,  "experiment", "Batch-corrected: by experiment")
+p_time; p_batch
+
+
+ggsave(here("02_figures", "PCA_by_time.png"),  p_time,  width = 11, height = 4.5)
+ggsave(here("02_figures", "PCA_by_batch.png"), p_batch, width = 11, height = 4.5)
+
+```
+
+## 2. heatmap
+
+```{r}
+
+## Heatmap: top 500 most variable genes
+top500 <- names(sort(apply(lcpm, 1, var), decreasing = TRUE))[1:500]
+mat <- lcpm[top500, ]
+mat <- mat - rowMeans(mat)                   # center each gene
+
+ann <- meta[, c("treatment", "time", "experiment")]
+rownames(ann) <- meta$sample
+ord <- order(meta$treatment, meta$time, meta$experiment)
+
+pheatmap(mat[, ord], annotation_col = ann[ord, ],
+         cluster_cols = FALSE, show_rownames = FALSE, show_colnames = FALSE,
+         color = colorRampPalette(c("navy", "white", "firebrick"))(100),
+         breaks = seq(-3, 3, length.out = 101),
+         main = "Top 500 variable genes (raw log2CPM, row-centered)",
+         filename = here("02_figures", "heatmap_top500.png"), width = 8, height = 9)
+
+```
+
+
+```{r}
+
+## Batch check: how much of each PC is explained by experiment vs time
+r2 <- function(pc, var, scores) summary(lm(scores[[pc]] ~ scores[[var]]))$r.squared
+batch_tab <- do.call(rbind, lapply(paste0("PC", 1:5), function(pc) data.frame(
+  PC = pc,
+  varexp_raw     = pca_raw$varexp[as.integer(sub("PC", "", pc))],
+  R2_batch_raw   = r2(pc, "experiment", pca_raw$scores),
+  R2_batch_corr  = r2(pc, "experiment", pca_rb$scores),
+  R2_time_raw    = r2(pc, "time", pca_raw$scores),
+  R2_time_corr   = r2(pc, "time", pca_rb$scores))))
+batch_tab[, -1] <- round(batch_tab[, -1], 2)
+batch_tab
+dir.create(here("03_results"), showWarnings = FALSE)
+write.csv(batch_tab, here("results", "batch_check_R2.csv"), row.names = FALSE)
+
+```
+
+
+```{r}
+
+library(pheatmap)
+
+# column annotations and colors
+ann <- data.frame(treatment = meta$treatment, time = meta$time,
+                  experiment = meta$experiment, row.names = meta$sample)
+ann_colors <- list(
+  treatment  = c(DMSO = "grey60", T4 = "#D55E00", T10 = "#593010"),
+  time       = c("0hr" = "#ecf5eb", "12hr" = "#ade6a3", "24hr" = "#359e23", "48hr" = "#176b08"),
+  experiment = c(exp6 = "#cfa1c9", exp8 = "#a1abcf", exp9 = "#634f70"))
+
+
+library(grid)
+
+make_heatmap <- function(m, title, file, shift_cm = 1) {
+  top <- names(sort(apply(m, 1, var), decreasing = TRUE))[1:500]
+  z <- m[top, ] - rowMeans(m[top, ])
+  ord <- order(meta$treatment, meta$time, meta$experiment)
+
+  p <- pheatmap(z[, ord], annotation_col = ann[ord, ], annotation_colors = ann_colors,
+                cluster_cols = FALSE, cluster_rows = TRUE,
+                clustering_method = "ward.D2",
+                show_rownames = FALSE, show_colnames = FALSE,
+                color = colorRampPalette(c("navy", "white", "firebrick"))(100),
+                breaks = seq(-3, 3, length.out = 101),
+                gaps_col = cumsum(table(meta$treatment)),
+                main = title, silent = TRUE)          # build it, don't draw yet
+
+  # move the color-scale legend down by shift_cm
+  i <- which(p$gtable$layout$name == "legend")
+  p$gtable$grobs[[i]] <- grobTree(p$gtable$grobs[[i]],
+    vp = viewport(y = unit(0.5, "npc") - unit(shift_cm, "cm")))
+
+  grid.newpage(); grid.draw(p$gtable)                 # show in HTML
+  png(file, width = 9, height = 9, units = "in", res = 300)
+  grid.draw(p$gtable); dev.off()                      # save PNG
+}
+
+make_heatmap(lcpm,    "Top 500 variable genes: raw log2CPM",
+             here("02_figures", "heatmap_top500_raw.png"))
+make_heatmap(lcpm_rb, "Top 500 variable genes: batch-corrected log2CPM",
+             here("02_figures", "heatmap_top500_corrected.png"))
+
+```
+
+
+
+## 3. clustering analysis - lab codes
+
+
+```{r}
+
+set.seed(1619)
+X <- t(mat)                         # 69 samples x 500 genes (centered)
+
+## Ward hierarchical clustering of samples
+d  <- dist(X, method = "euclidean")
+hc <- hclust(d, method = "ward.D2")
+plot(hc, labels = paste(meta$time, meta$experiment), cex = 0.5,
+     main = "Ward clustering of samples (top 500 genes)")
+rect.hclust(hc, k = 4, border = "red")
+grp <- cutree(hc, k = 4)
+table(cluster = grp, time = meta$time)          # does it cluster by biology...
+table(cluster = grp, batch = meta$experiment)   # ...or by batch?
+
+## K-means: elbow plot (as in the tutorial), on the first 10 PCs
+pcs <- prcomp(X)$x[, 1:10]
+wss <- sapply(1:10, function(k) kmeans(pcs, k, nstart = 25)$tot.withinss)
+plot(1:10, wss, type = "b", xlab = "Number of clusters", ylab = "Within-groups SS")
+km <- kmeans(pcs, centers = 4, nstart = 25)    # adjust k to the elbow
+table(km$cluster, meta$time)
+
+## Run the same Ward step on lcpm_rb to compare with batch correction
+
+```
+
+
+```{r}
+
+library(dendextend)
+
+cols <- list(
+  treatment  = c(DMSO = "grey60", T4 = "#C2601F", T10 = "#4E2C12"),
+  time       = c("0hr" = "#EEF5EC", "12hr" = "#BDE3A8", "24hr" = "#5B9E3B", "48hr" = "#2F6A1F"),
+  experiment = c(exp6 = "#C8A2C8", exp8 = "#A5ACD3", exp9 = "#5E4E6E"))   # edit to match your heatmap
+
+plot_dend <- function(m, title, k = 4) {
+  top <- names(sort(apply(m, 1, var), decreasing = TRUE))[1:500]
+  X <- t(m[top, ] - rowMeans(m[top, ]))
+  hc <- hclust(dist(X), method = "ward.D2")
+  dend <- as.dendrogram(hc) |>
+    set("labels", rep("", nrow(X))) |>               # hide unreadable labels
+    color_branches(k = k)
+  bars <- data.frame(treatment  = cols$treatment[as.character(meta$treatment)],
+                     time       = cols$time[as.character(meta$time)],
+                     experiment = cols$experiment[as.character(meta$experiment)])
+  par(mar = c(7, 4, 3, 1))
+  plot(dend, main = title, ylab = "Height")
+  colored_bars(colors = bars, dend = dend, rowLabels = colnames(bars),
+               y_shift = -5, y_scale = 15)
+  invisible(cutree(hc, k = k))
+}
+
+par(mfrow = c(1, 2))
+grp_raw <- plot_dend(lcpm,    "Raw log2CPM")
+grp_rb  <- plot_dend(lcpm_rb, "Batch-corrected log2CPM")
+par(mfrow = c(1, 1))
+
+# how the 4 clusters line up with biology vs batch
+table(cluster = grp_rb, treatment = meta$treatment)
+table(cluster = grp_rb, experiment = meta$experiment)
+
+```
+
